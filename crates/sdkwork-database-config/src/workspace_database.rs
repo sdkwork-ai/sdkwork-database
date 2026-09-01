@@ -269,6 +269,7 @@ fn canonical_database_profile(database: &str) -> Option<&'static str> {
         "sdkwork_ai_test" => Some("test"),
         "sdkwork_ai_staging" => Some("staging"),
         "sdkwork_ai_prod" => Some("production"),
+        "sdkwork_ai_demo" => Some("demo"),
         value
             if value.starts_with("sdkwork_ai_test_")
                 && value["sdkwork_ai_test_".len()..]
@@ -290,6 +291,7 @@ fn expected_username(database: &str) -> &'static str {
             "sdkwork_ai_test" => "sdkwork_ai_test",
             "sdkwork_ai_staging" => "sdkwork_ai_staging",
             "sdkwork_ai_prod" => "sdkwork_ai_prod",
+            "sdkwork_ai_demo" => "sdkwork_ai_demo",
             _ => "",
         }
     }
