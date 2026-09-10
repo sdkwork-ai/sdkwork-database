@@ -55,6 +55,18 @@ pub async fn create_postgres_pool(
         connect_options = connect_options.ssl_root_cert(cert_path);
     }
 
+    // Server-side guard timeouts travel as startup parameters so every
+    // pooled connection fails fast on runaway statements, lock waits, and
+    // abandoned idle transactions instead of holding pool capacity forever.
+    let guard_parameters = pg_config.guard_startup_parameters();
+    if !guard_parameters.is_empty() {
+        connect_options = connect_options.options(
+            guard_parameters
+                .iter()
+                .map(|(name, value)| (*name, value.as_str())),
+        );
+    }
+
     let pool = PgPoolOptions::new()
         .max_connections(config.max_connections)
         .min_connections(config.min_connections)

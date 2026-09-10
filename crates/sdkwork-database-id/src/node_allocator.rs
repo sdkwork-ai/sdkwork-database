@@ -460,10 +460,24 @@ async fn ensure_registry_table(pool: &DatabasePool) -> Result<(), NodeAllocatorE
     match pool {
         #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg, _) => {
-            sqlx::query(CREATE_POSTGRES_TABLE_SQL)
-                .execute(pg)
-                .await
-                .map_err(|e| NodeAllocatorError::Database(format!("create table: {e}")))?;
+            // A least-privilege runtime role owns only DML on this schema:
+            // `CREATE TABLE IF NOT EXISTS` still demands schema CREATE even
+            // when the table already exists, which would fail every hardened
+            // server startup. Probe first and run DDL only when the registry
+            // is genuinely missing (fresh environments, where the caller is
+            // expected to hold migrator privileges).
+            let registry_exists: bool = sqlx::query_scalar(
+                "SELECT to_regclass('sdkwork_node_registry') IS NOT NULL",
+            )
+            .fetch_one(pg)
+            .await
+            .map_err(|e| NodeAllocatorError::Database(format!("probe registry table: {e}")))?;
+            if !registry_exists {
+                sqlx::query(CREATE_POSTGRES_TABLE_SQL)
+                    .execute(pg)
+                    .await
+                    .map_err(|e| NodeAllocatorError::Database(format!("create table: {e}")))?;
+            }
             ensure_postgres_registry_schema(pg).await?;
         }
         #[cfg(feature = "sqlite")]

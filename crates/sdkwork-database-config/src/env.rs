@@ -89,6 +89,8 @@ fn load_server_config(service_name: &str) -> Result<DatabaseConfig, ConfigError>
         max_lifetime_secs,
     ) = resolve_pool_settings()?;
     let postgres_ssl_mode = resolve_postgres_ssl_mode(&url);
+    let (statement_timeout_ms, lock_timeout_ms, idle_in_transaction_timeout_ms) =
+        resolve_postgres_guard_timeouts();
 
     Ok(DatabaseConfig {
         engine,
@@ -103,6 +105,9 @@ fn load_server_config(service_name: &str) -> Result<DatabaseConfig, ConfigError>
         sqlite: SqliteConfig::default(),
         postgres: PostgresConfig {
             ssl_mode: postgres_ssl_mode,
+            statement_timeout_ms,
+            lock_timeout_ms,
+            idle_in_transaction_timeout_ms,
             ..Default::default()
         },
     })
@@ -195,6 +200,27 @@ fn resolve_postgres_ssl_mode(url: &str) -> PgSslMode {
         .map(|value| parse_pg_ssl_mode(&value))
         .or_else(|| parse_pg_ssl_mode_from_url(url))
         .unwrap_or(PgSslMode::Prefer)
+}
+
+/// Server-side guard timeouts for pooled PostgreSQL connections
+/// (`statement_timeout`, `lock_timeout`,
+/// `idle_in_transaction_session_timeout`). `0` disables a guard so the
+/// server default applies.
+fn resolve_postgres_guard_timeouts() -> (u64, u64, u64) {
+    let statement_timeout_ms =
+        get_env_as("SDKWORK_DATABASE_STATEMENT_TIMEOUT_MS", 30_000_u64).unwrap_or(30_000);
+    let lock_timeout_ms =
+        get_env_as("SDKWORK_DATABASE_LOCK_TIMEOUT_MS", 10_000_u64).unwrap_or(10_000);
+    let idle_in_transaction_timeout_ms = get_env_as(
+        "SDKWORK_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS",
+        60_000_u64,
+    )
+    .unwrap_or(60_000);
+    (
+        statement_timeout_ms,
+        lock_timeout_ms,
+        idle_in_transaction_timeout_ms,
+    )
 }
 
 fn parse_pg_ssl_mode(value: &str) -> PgSslMode {
