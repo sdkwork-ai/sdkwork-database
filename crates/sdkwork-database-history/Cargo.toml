@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 description = "SDKWork database ops history tables and queries"
 
+
+[lints]
+workspace = true
 [features]
 default = ["postgres"]
 postgres = ["sqlx/postgres", "sdkwork_database_sqlx/postgres"]

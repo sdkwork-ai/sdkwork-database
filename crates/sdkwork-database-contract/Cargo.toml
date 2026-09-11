@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 description = "Parse SDKWork database schema contracts and registries"
 
+
+[lints]
+workspace = true
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

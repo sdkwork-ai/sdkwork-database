@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "Unified repository pattern abstraction for SDKWork database operations"
 
+
+[lints]
+workspace = true
 [features]
 default = ["postgres"]
 postgres = [

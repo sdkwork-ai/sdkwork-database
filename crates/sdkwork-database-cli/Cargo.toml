@@ -10,6 +10,9 @@ description = "SDKWork database lifecycle CLI"
 name = "sdkwork-db"
 path = "src/main.rs"
 
+
+[lints]
+workspace = true
 [dependencies]
 sdkwork_database_config.workspace = true
 sdkwork_database_drift.workspace = true

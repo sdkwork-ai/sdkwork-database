@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "Sqlx-based database connection pool implementation for SDKWork"
 
+
+[lints]
+workspace = true
 [features]
 default = ["postgres"]
 postgres = ["sqlx/postgres"]

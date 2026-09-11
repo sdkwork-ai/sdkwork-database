@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 description = "SDKWork database lifecycle orchestration: migrate, seed, bootstrap"
 
+
+[lints]
+workspace = true
 [features]
 default = ["postgres"]
 postgres = [

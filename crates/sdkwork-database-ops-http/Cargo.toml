@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 description = "Axum routes and auth middleware for SDKWork database ops endpoints"
 
+
+[lints]
+workspace = true
 [dependencies]
 axum = "0.8"
 sdkwork_database_ops.workspace = true

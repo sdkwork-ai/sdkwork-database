@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 description = "SDKWork database ops read models for status, drift, migrations, and seeds"
 
+
+[lints]
+workspace = true
 [features]
 default = ["postgres"]
 postgres = ["sdkwork_database_drift/postgres"]

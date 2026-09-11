@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "Database-backed Snowflake node_id allocation and unified ID generation for SDKWork services."
 
+
+[lints]
+workspace = true
 [features]
 default = ["postgres"]
 postgres = ["sqlx/postgres", "sdkwork_database_sqlx/postgres"]
