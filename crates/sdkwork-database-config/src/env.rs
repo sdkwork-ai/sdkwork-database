@@ -264,7 +264,7 @@ fn get_env_as<T: std::str::FromStr>(key: &str, default: T) -> Result<T, ConfigEr
     }
 }
 
-#[cfg(test)]
+#[cfg(test)] // WORKSPACE-PATH:allow-fixture-block: this module is the file's #[cfg(test)] unit-test fixture data
 mod tests {
     use super::*;
     use serial_test::serial;

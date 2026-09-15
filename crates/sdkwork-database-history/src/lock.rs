@@ -435,7 +435,7 @@ fn sqlite_database_path(url: &str) -> Option<PathBuf> {
     }
 }
 
-#[cfg(test)]
+#[cfg(test)] // WORKSPACE-PATH:allow-fixture-block: this module is the file's #[cfg(test)] unit-test fixture data
 mod tests {
     use super::*;
     #[cfg(feature = "sqlite")]
