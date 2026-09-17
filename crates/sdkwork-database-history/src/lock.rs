@@ -413,8 +413,8 @@ fn sqlite_database_path(url: &str) -> Option<PathBuf> {
 
     if let Some(uri) = value.strip_prefix("//") {
         value = uri;
-        // `sqlite:///C:/data.db` is an absolute Windows path represented with
-        // one URI separator slash in addition to the drive path.
+        // A `sqlite:` URL spelled with three slashes carries an absolute Windows
+        // path: one URI separator slash in addition to the drive root.
         if value.starts_with('/') && value.as_bytes().get(2).copied() == Some(b':') {
             value = &value[1..];
         }

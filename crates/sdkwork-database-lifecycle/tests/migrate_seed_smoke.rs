@@ -113,8 +113,8 @@ async fn baseline_is_skipped_when_anchor_table_already_exists_without_module_his
 
     write_file(
         &root.join("database/ddl/baseline/sqlite/0001_existing_web_audit_baseline.sql"),
-        "CREATE TABLE IF NOT EXISTS web_audit_event (id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL);\n\
-         CREATE INDEX IF NOT EXISTS idx_web_audit_expires ON web_audit_event (expires_at);",
+        "CREATE TABLE IF NOT EXISTS framework_audit_event (id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL);\n\
+         CREATE INDEX IF NOT EXISTS idx_framework_audit_expires ON framework_audit_event (expires_at);",
     );
 
     let module = Arc::new(DefaultDatabaseModule::from_app_root(root).unwrap());
@@ -131,7 +131,7 @@ async fn baseline_is_skipped_when_anchor_table_already_exists_without_module_his
         .await
         .unwrap();
     sqlx::query(
-        "CREATE TABLE web_audit_event (id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL)",
+        "CREATE TABLE framework_audit_event (id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL)",
     )
     .execute(&sqlite_pool)
     .await
@@ -142,7 +142,7 @@ async fn baseline_is_skipped_when_anchor_table_already_exists_without_module_his
     orchestrator.init().await.unwrap();
 
     let expires_at_column_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM pragma_table_info('web_audit_event') WHERE name = 'expires_at'",
+        "SELECT COUNT(*) FROM pragma_table_info('framework_audit_event') WHERE name = 'expires_at'",
     )
     .fetch_one(&sqlite_pool)
     .await
