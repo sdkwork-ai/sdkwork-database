@@ -87,7 +87,7 @@ pub fn validate_module_layout(module_root: &Path) -> Result<(), Vec<String>> {
     let mut failures = Vec::new();
 
     let manifest = DatabaseManifest::from_file(module_root.join("database.manifest.json")).ok();
-    let is_client_local = manifest.as_ref().map_or(false, |module| {
+    let is_client_local = manifest.as_ref().is_some_and(|module| {
         module.engines.iter().any(|engine| engine == "sqlite")
             || module.default_engine.as_deref() == Some("sqlite")
     });
@@ -754,7 +754,7 @@ mod tests {
     ) -> String {
         let mut lines = vec![
             "-- sdkwork:migration".to_owned(),
-            format!("-- id: 0001_create_forum_space"),
+            "-- id: 0001_create_forum_space".to_owned(),
             format!("-- engine: {engine}"),
             format!("-- reversible: {reversible}"),
             format!("-- rollback: {rollback}"),
