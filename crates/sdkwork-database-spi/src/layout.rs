@@ -47,6 +47,21 @@ const ROLLBACK_KEY: &str = "rollback";
 /// `restore-cutover`; the leading token is the machine-readable strategy).
 const DOWN_MIGRATION_TOKEN: &str = "down-migration";
 
+/// The engine a migration declares must match the directory that holds it
+/// (section 7.2), otherwise a migration can be applied under the wrong runner.
+const ENGINE_KEY: &str = "engine";
+
+/// Section 7.2 fixes the `rollback` vocabulary. The leading token is the
+/// machine-readable strategy; a parenthetical explanation may follow it, but
+/// raw SQL or prose "such as `drops both columns`" must not replace it.
+const ROLLBACK_TOKENS: &[&str] = &["down-migration", "forward-fix", "restore-cutover"];
+
+/// Section 7.2 requires these to be explicit for production PostgreSQL
+/// migrations: the runner needs to know whether it may wrap the statements in
+/// a transaction and how long it may hold a lock or a statement.
+const PRODUCTION_TIMING_FIELDS: &[&str] =
+    &["transactional", "lock", "lock_timeout", "statement_timeout"];
+
 /// Validates the standard module layout for a database module root.
 ///
 /// The required engine directories are derived from the module manifest:
@@ -181,16 +196,9 @@ fn validate_migration_filenames(module_root: &Path, is_client_local: bool) -> Ve
             continue;
         }
         let up_name = format!("{stem}.up.sql");
-        let header = fs::read_to_string(dir.join(&up_name))
-            .map(|text| header_metadata(&text))
-            .unwrap_or_default();
+        let header = read_header(&dir, &up_name);
         let corrections = sidecar.get(&up_name);
-        let effective = |key: &str| -> Option<String> {
-            corrections
-                .and_then(|fields| fields.get(key))
-                .cloned()
-                .or_else(|| header.get(key).cloned())
-        };
+        let effective = |key: &str| effective_metadata(&header, corrections, key);
 
         let reversible = effective(REVERSIBLE_KEY);
         let rollback = effective(ROLLBACK_KEY);
@@ -208,7 +216,86 @@ fn validate_migration_filenames(module_root: &Path, is_client_local: bool) -> Ve
         }
     }
 
+    // Section 7.2 and section 547: the effective metadata of every migration
+    // MUST satisfy every metadata rule that applies to a newly authored
+    // migration - `engine` equal to the containing engine directory,
+    // `reversible` exactly true or false, `rollback` beginning with one of the
+    // strategy tokens, and the four timing fields defined for PostgreSQL.
+    // Checking only the migrations that ship a `.down.sql` would leave the rest
+    // of the header free to rot, and an unreadable strategy is exactly what
+    // makes a migration unsafe to automate: a `rollback` value holding raw prose
+    // is indistinguishable from a strategy to every consumer of this metadata.
+    for name in &names {
+        if !name.ends_with(".up.sql") {
+            continue;
+        }
+        let header = read_header(&dir, name);
+        let corrections = sidecar.get(name);
+        let effective = |key: &str| effective_metadata(&header, corrections, key);
+
+        let mut violations = Vec::new();
+        match effective(ENGINE_KEY).as_deref() {
+            Some(value) if value == engine => {}
+            Some(value) => violations.push(format!("engine is {value}, expected {engine}")),
+            None => violations.push("engine must be declared".to_owned()),
+        }
+        match effective(REVERSIBLE_KEY).as_deref() {
+            Some("true" | "false") => {}
+            Some(value) => violations.push(format!(
+                "reversible is {value}, expected exactly true or false"
+            )),
+            None => violations.push("reversible must be declared".to_owned()),
+        }
+        match effective(ROLLBACK_KEY) {
+            Some(value) if ROLLBACK_TOKENS.iter().any(|token| value.starts_with(token)) => {}
+            Some(value) => violations.push(format!(
+                "rollback is {value}, which must begin with one of {}",
+                ROLLBACK_TOKENS.join(", ")
+            )),
+            None => violations.push("rollback must be declared".to_owned()),
+        }
+        if !is_client_local {
+            for field in PRODUCTION_TIMING_FIELDS {
+                if effective(field).is_none() {
+                    violations.push(format!(
+                        "{field} must be declared for production PostgreSQL migrations"
+                    ));
+                }
+            }
+        }
+        if !violations.is_empty() {
+            failures.push(format!(
+                "migrations/{engine}/{name} declares metadata that a newly authored migration could not ship: {}",
+                violations.join("; ")
+            ));
+        }
+    }
+
     failures
+}
+
+/// Reads one migration's structured header, returning no fields when the file
+/// cannot be read: an unreadable migrations directory is already reported, and
+/// a metadata failure on top of it would only add noise.
+fn read_header(engine_dir: &Path, name: &str) -> std::collections::HashMap<String, String> {
+    fs::read_to_string(engine_dir.join(name))
+        .map(|text| header_metadata(&text))
+        .unwrap_or_default()
+}
+
+/// Section 7.2 resolves the effective metadata as the structured header with
+/// sidecar corrections applied. The sidecar wins because it is the only
+/// sanctioned way to correct a tracked, history-immutable migration without
+/// rewriting it.
+fn effective_metadata(
+    header: &std::collections::HashMap<String, String>,
+    corrections: Option<&std::collections::HashMap<String, String>>,
+    key: &str,
+) -> Option<String> {
+    corrections
+        .and_then(|fields| fields.get(key))
+        .cloned()
+        .or_else(|| header.get(key).cloned())
 }
 
 /// Reads the structured header block of a migration.
@@ -396,30 +483,49 @@ mod tests {
         );
     }
 
-    /// A migration whose header declares the one strategy that admits a
-    /// paired `.down.sql` (DATABASE_FRAMEWORK_SPEC.md section 7.1).
+    /// A migration that satisfies every section 7.2 metadata rule for a newly
+    /// authored production PostgreSQL migration.
+    fn migration_with(
+        engine: &str,
+        reversible: &str,
+        rollback: &str,
+        timing: bool,
+        body: &str,
+    ) -> String {
+        let mut lines = vec![
+            "-- sdkwork:migration".to_owned(),
+            format!("-- id: 0001_create_forum_space"),
+            format!("-- engine: {engine}"),
+            format!("-- reversible: {reversible}"),
+            format!("-- rollback: {rollback}"),
+        ];
+        if timing {
+            for field in [
+                "-- transactional: true",
+                "-- lock: table",
+                "-- lock_timeout: 5s",
+                "-- statement_timeout: 30s",
+            ] {
+                lines.push(field.to_owned());
+            }
+        }
+        lines.push(body.to_owned());
+        lines.join("\n")
+    }
+
+    /// The one strategy that admits a paired `.down.sql` (section 7.1).
     fn reversible_migration(body: &str) -> String {
-        [
-            "-- sdkwork:migration",
-            "-- id: 0001_create_forum_space",
-            "-- engine: postgres",
-            "-- reversible: true",
-            "-- rollback: down-migration",
-            body,
-        ]
-        .join("\n")
+        migration_with("postgres", "true", "down-migration", true, body)
     }
 
     fn irreversible_migration() -> String {
-        [
-            "-- sdkwork:migration",
-            "-- id: 0001_pricing_rate_book_dimension_columns",
-            "-- engine: postgres",
-            "-- reversible: false",
-            "-- rollback: forward-fix",
+        migration_with(
+            "postgres",
+            "false",
+            "forward-fix",
+            true,
             "ALTER TABLE pricing_price_book ADD COLUMN IF NOT EXISTS vendor_code VARCHAR(64);",
-        ]
-        .join("\n")
+        )
     }
 
     fn sidecar(entries: &str) -> String {
@@ -471,14 +577,17 @@ mod tests {
 
         let failures = validate_migration_filenames(root.path(), false);
 
-        assert_eq!(
-            failures.len(),
-            1,
-            "a headerless migration must not ship a rollback script: {failures:?}"
+        // A headerless migration violates the pairing rule and every section 7.2
+        // metadata rule at once; the pairing failure is what this test pins.
+        assert!(
+            failures
+                .iter()
+                .any(|line| line.contains("pairs with") && line.contains("<absent>")),
+            "the pairing failure must report the field as absent: {failures:?}"
         );
         assert!(
-            failures[0].contains("<absent>"),
-            "the failure must report the field as absent: {failures:?}"
+            failures.iter().any(|line| line.contains("could not ship")),
+            "the metadata failure must also be reported: {failures:?}"
         );
     }
 
@@ -487,13 +596,13 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary module root");
         // The header records the down action in prose, which section 7.2 calls
         // malformed; the sidecar is the sanctioned repair for a tracked migration.
-        let header = [
-            "-- sdkwork:migration",
-            "-- reversible: true",
-            "-- rollback: re-creates the unique index (fails if duplicate hashes exist)",
+        let header = migration_with(
+            "postgres",
+            "true",
+            "re-creates the unique index (fails if duplicate hashes exist)",
+            true,
             "DROP INDEX oauth_secret_hash_unique;",
-        ]
-        .join("\n");
+        );
         write(
             root.path(),
             "migrations/postgres/0001_oauth_secret_hash_non_unique.up.sql",
@@ -578,6 +687,129 @@ mod tests {
         assert!(
             failures[0].contains("kind must be"),
             "unexpected failure: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn migration_without_the_production_timing_fields_is_rejected() {
+        let root = tempfile::tempdir().expect("temporary module root");
+        write(
+            root.path(),
+            "migrations/postgres/0001_create_forum_space.up.sql",
+            &migration_with("postgres", "true", "down-migration", false, "SELECT 1;"),
+        );
+
+        let failures = validate_migration_filenames(root.path(), false);
+
+        assert_eq!(
+            failures.len(),
+            1,
+            "timing fields are mandatory: {failures:?}"
+        );
+        for field in ["transactional", "lock", "lock_timeout", "statement_timeout"] {
+            assert!(
+                failures[0].contains(field),
+                "the failure must name {field}: {failures:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sqlite_migration_does_not_require_the_production_timing_fields() {
+        let root = tempfile::tempdir().expect("temporary module root");
+        write(
+            root.path(),
+            "migrations/sqlite/0001_create_forum_space.up.sql",
+            &migration_with("sqlite", "true", "down-migration", false, "SELECT 1;"),
+        );
+
+        let failures = validate_migration_filenames(root.path(), true);
+
+        assert!(
+            failures.is_empty(),
+            "section 7.2 scopes the timing fields to PostgreSQL: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn migration_declaring_prose_rollback_is_rejected() {
+        let root = tempfile::tempdir().expect("temporary module root");
+        write(
+            root.path(),
+            "migrations/postgres/0001_create_forum_space.up.sql",
+            &migration_with("postgres", "true", "drops both columns", true, "SELECT 1;"),
+        );
+
+        let failures = validate_migration_filenames(root.path(), false);
+
+        assert_eq!(failures.len(), 1, "prose is not a strategy: {failures:?}");
+        assert!(
+            failures[0].contains("must begin with one of"),
+            "unexpected failure: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn migration_declaring_a_non_boolean_reversible_is_rejected() {
+        let root = tempfile::tempdir().expect("temporary module root");
+        write(
+            root.path(),
+            "migrations/postgres/0001_create_forum_space.up.sql",
+            &migration_with("postgres", "yes", "down-migration", true, "SELECT 1;"),
+        );
+
+        let failures = validate_migration_filenames(root.path(), false);
+
+        assert_eq!(failures.len(), 1, "reversible is a boolean: {failures:?}");
+        assert!(
+            failures[0].contains("exactly true or false"),
+            "unexpected failure: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn migration_declaring_the_wrong_engine_is_rejected() {
+        let root = tempfile::tempdir().expect("temporary module root");
+        write(
+            root.path(),
+            "migrations/postgres/0001_create_forum_space.up.sql",
+            &migration_with("sqlite", "true", "down-migration", true, "SELECT 1;"),
+        );
+
+        let failures = validate_migration_filenames(root.path(), false);
+
+        assert_eq!(
+            failures.len(),
+            1,
+            "engine must match the directory: {failures:?}"
+        );
+        assert!(
+            failures[0].contains("expected postgres"),
+            "unexpected failure: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn sidecar_repairs_a_malformed_metadata_header() {
+        let root = tempfile::tempdir().expect("temporary module root");
+        write(
+            root.path(),
+            "migrations/postgres/0001_create_forum_space.up.sql",
+            &migration_with("postgres", "yes", "drops both columns", false, "SELECT 1;"),
+        );
+        write(
+            root.path(),
+            "migrations/postgres/metadata.json",
+            &sidecar(
+                r#"{"0001_create_forum_space.up.sql":{"engine":"postgres","reversible":"true","rollback":"down-migration","transactional":"true","lock":"table","lock_timeout":"5s","statement_timeout":"30s","correctionReason":"the header was malformed"}}"#,
+            ),
+        );
+
+        let failures = validate_migration_filenames(root.path(), false);
+
+        assert!(
+            failures.is_empty(),
+            "the sidecar is the sanctioned repair for a tracked migration: {failures:?}"
         );
     }
 }
