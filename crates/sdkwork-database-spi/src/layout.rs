@@ -7,17 +7,26 @@ const REQUIRED_LOCALES: &[&str] = &[
     "zh-CN", "en-US", "ja-JP", "de-DE", "fr-FR", "ru-RU", "ko-KR",
 ];
 
-const REQUIRED_PATHS_COMMON: &[&str] = &[
+/// Paths both layouts agree on and that every database module root provides
+/// (DATABASE_FRAMEWORK_SPEC.md §5.1 and §5.2 both list these).
+const REQUIRED_PATHS_ALL_ROLES: &[&str] = &[
     "README.md",
     "database.manifest.json",
     "contract/schema.yaml",
+    "fixtures",
+];
+
+/// Paths only an authoritative server root provides (§5.1). The client-local
+/// layout (§5.2) has no seed tree, no drift policy, no generated DDL directory,
+/// and no ownership registries, so demanding them from every root rejects a
+/// module that follows §5.2 exactly.
+const REQUIRED_PATHS_AUTHORITATIVE: &[&str] = &[
     "contract/prefix-registry.json",
     "contract/table-registry.json",
     "seeds/seed.manifest.json",
     "drift/policy.yaml",
     "seeds/common",
     "ddl/generated",
-    "fixtures",
 ];
 
 const POSTGRES_PATHS: &[&str] = &["migrations/postgres", "ddl/baseline/postgres"];
@@ -64,27 +73,35 @@ const PRODUCTION_TIMING_FIELDS: &[&str] =
 
 /// Validates the standard module layout for a database module root.
 ///
-/// The required engine directories are derived from the module manifest:
+/// The manifest decides which layout applies, so it is read first. A root whose
+/// manifest is missing or unparseable is validated against the strictest
+/// layout, §5.1.
+///
+/// The required paths and engine directories are then derived from the role:
 /// `authoritative-server` modules (engines `["postgres"]`) must provide the
-/// postgres directories and MUST NOT contain sqlite engine directories;
-/// `client-local` modules (engines `["sqlite"]`) must provide the sqlite
-/// directories and MUST NOT contain postgres engine directories
-/// (DATABASE_FRAMEWORK_SPEC.md §5.1/§5.2).
+/// §5.1 paths plus the postgres directories and MUST NOT contain sqlite engine
+/// directories; `client-local` modules (engines `["sqlite"]`) must provide the
+/// §5.2 paths plus the sqlite directories and MUST NOT contain postgres engine
+/// directories (DATABASE_FRAMEWORK_SPEC.md §5.1/§5.2).
 pub fn validate_module_layout(module_root: &Path) -> Result<(), Vec<String>> {
     let mut failures = Vec::new();
-
-    for relative in REQUIRED_PATHS_COMMON {
-        let path = module_root.join(relative);
-        if !path.exists() {
-            failures.push(format!("{relative} must exist"));
-        }
-    }
 
     let manifest = DatabaseManifest::from_file(module_root.join("database.manifest.json")).ok();
     let is_client_local = manifest.as_ref().map_or(false, |module| {
         module.engines.iter().any(|engine| engine == "sqlite")
             || module.default_engine.as_deref() == Some("sqlite")
     });
+
+    let mut required_paths: Vec<&str> = REQUIRED_PATHS_ALL_ROLES.to_vec();
+    if !is_client_local {
+        required_paths.extend_from_slice(REQUIRED_PATHS_AUTHORITATIVE);
+    }
+    for relative in &required_paths {
+        let path = module_root.join(relative);
+        if !path.exists() {
+            failures.push(format!("{relative} must exist"));
+        }
+    }
 
     let (required_engine_paths, forbidden_engine_paths): (&[&str], &[&str]) = if is_client_local {
         (SQLITE_PATHS, POSTGRES_PATHS)
@@ -107,10 +124,13 @@ pub fn validate_module_layout(module_root: &Path) -> Result<(), Vec<String>> {
         failures.push("local-data-policy.yaml must exist for client-local modules".to_owned());
     }
 
-    for locale in REQUIRED_LOCALES {
-        let relative = format!("seeds/locales/{locale}");
-        if !module_root.join(&relative).exists() {
-            failures.push(format!("{relative} must exist"));
+    // The locale matrix belongs to the seed tree, which §5.2 does not define.
+    if !is_client_local {
+        for locale in REQUIRED_LOCALES {
+            let relative = format!("seeds/locales/{locale}");
+            if !module_root.join(&relative).exists() {
+                failures.push(format!("{relative} must exist"));
+            }
         }
     }
 
@@ -389,12 +409,252 @@ fn read_migration_metadata_sidecar(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_migration_filenames;
+    use super::{validate_migration_filenames, validate_module_layout};
 
     fn write(root: &std::path::Path, relative: &str, body: &str) {
         let path = root.join(relative);
         std::fs::create_dir_all(path.parent().expect("parent")).expect("create migration dir");
         std::fs::write(path, body).expect("write migration file");
+    }
+
+    /// The manifest from DATABASE_FRAMEWORK_SPEC.md section 6.1, first example.
+    const AUTHORITATIVE_MANIFEST: &str = r#"{
+  "schemaVersion": 2,
+  "kind": "sdkwork.database.module",
+  "databaseRole": "authoritative-server",
+  "moduleId": "forum",
+  "serviceCode": "FORUM",
+  "displayName": "Forum Database",
+  "owner": "forum-platform",
+  "engines": ["postgres"],
+  "defaultEngine": "postgres",
+  "tablePrefix": "forum_",
+  "contractVersion": "1.4.0",
+  "baselineStrategy": "migrations-only",
+  "modules": [],
+  "lifecycle": {
+    "autoMigrate": false,
+    "seedOnBoot": false,
+    "defaultSeedLocale": "zh-CN",
+    "defaultSeedProfile": "standard",
+    "supportedSeedLocales": ["zh-CN", "en-US", "ja-JP", "de-DE", "fr-FR", "ru-RU", "ko-KR"],
+    "activeSeedLocales": ["zh-CN"],
+    "driftCheckIntervalSec": 60
+  },
+  "paths": {
+    "contract": "contract/schema.yaml",
+    "migrations": "migrations",
+    "seeds": "seeds",
+    "driftPolicy": "drift/policy.yaml"
+  },
+  "spi": {
+    "provider": "default",
+    "hooks": []
+  }
+}"#;
+
+    /// The manifest from DATABASE_FRAMEWORK_SPEC.md section 6.1, client-local
+    /// profile. Its `paths` block deliberately omits `seeds` and `driftPolicy`,
+    /// so this constant is also the regression fixture for that omission being
+    /// parseable at all.
+    const CLIENT_LOCAL_MANIFEST: &str = r#"{
+  "schemaVersion": 2,
+  "kind": "sdkwork.database.module",
+  "databaseRole": "client-local",
+  "moduleId": "forum-desktop-local",
+  "serviceCode": "FORUM_DESKTOP_LOCAL",
+  "displayName": "Forum Desktop Local Database",
+  "owner": "forum-client",
+  "engines": ["sqlite"],
+  "defaultEngine": "sqlite",
+  "contractVersion": "1.0.0",
+  "baselineStrategy": "migrations-only",
+  "clientLocal": {
+    "mode": "offline-projection",
+    "scope": "environment-profile-origin-account",
+    "authoritativeSource": "forum-app-api",
+    "syncContract": "specs/forum-offline-sync.spec.json"
+  },
+  "lifecycle": {
+    "autoMigrate": true,
+    "seedOnBoot": false
+  },
+  "paths": {
+    "contract": "contract/schema.yaml",
+    "migrations": "migrations",
+    "localDataPolicy": "local-data-policy.yaml"
+  }
+}"#;
+
+    fn touch_file(root: &std::path::Path, relative: &str) {
+        write(root, relative, "");
+    }
+
+    fn touch_dir(root: &std::path::Path, relative: &str) {
+        std::fs::create_dir_all(root.join(relative)).expect("create directory");
+    }
+
+    /// The complete section 5.1 layout for an authoritative server root.
+    fn authoritative_root() -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("temporary module root");
+        touch_file(root.path(), "database.manifest.json");
+        std::fs::write(
+            root.path().join("database.manifest.json"),
+            AUTHORITATIVE_MANIFEST,
+        )
+        .expect("write manifest");
+        for relative in [
+            "README.md",
+            "contract/schema.yaml",
+            "contract/prefix-registry.json",
+            "contract/table-registry.json",
+            "seeds/seed.manifest.json",
+            "seeds/common",
+            "drift/policy.yaml",
+            "ddl/generated",
+            "fixtures",
+            "migrations/postgres",
+            "ddl/baseline/postgres",
+            "seeds/locales/zh-CN",
+            "seeds/locales/en-US",
+            "seeds/locales/ja-JP",
+            "seeds/locales/de-DE",
+            "seeds/locales/fr-FR",
+            "seeds/locales/ru-RU",
+            "seeds/locales/ko-KR",
+        ] {
+            touch_dir(root.path(), relative);
+        }
+        root
+    }
+
+    /// The complete section 5.2 layout for a client-local module root: no seed
+    /// tree, no drift policy, no generated DDL directory, no ownership
+    /// registries.
+    fn client_local_root() -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("temporary module root");
+        std::fs::write(
+            root.path().join("database.manifest.json"),
+            CLIENT_LOCAL_MANIFEST,
+        )
+        .expect("write manifest");
+        for relative in [
+            "README.md",
+            "contract/schema.yaml",
+            "migrations/sqlite",
+            "ddl/baseline/sqlite",
+            "fixtures",
+        ] {
+            touch_dir(root.path(), relative);
+        }
+        std::fs::write(root.path().join("local-data-policy.yaml"), "mode: cache\n")
+            .expect("write local data policy");
+        root
+    }
+
+    #[test]
+    fn authoritative_layout_is_accepted() {
+        let root = authoritative_root();
+
+        assert_eq!(validate_module_layout(root.path()), Ok(()));
+    }
+
+    #[test]
+    fn client_local_layout_is_accepted_without_the_authoritative_only_paths() {
+        // Section 5.2 does not define a seed tree, a drift policy, a generated
+        // DDL directory, or the ownership registries, so a module that follows
+        // it exactly must pass.
+        let root = client_local_root();
+
+        assert_eq!(
+            validate_module_layout(root.path()),
+            Ok(()),
+            "a section 5.2 layout must not be judged by section 5.1"
+        );
+    }
+
+    #[test]
+    fn client_local_layout_still_requires_the_shared_paths() {
+        let root = client_local_root();
+        std::fs::remove_dir_all(root.path().join("fixtures")).expect("remove fixtures");
+
+        let failures = validate_module_layout(root.path()).expect_err("fixtures is required");
+
+        assert!(
+            failures.contains(&"fixtures must exist".to_owned()),
+            "unexpected failures: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn client_local_layout_requires_the_local_data_policy() {
+        let root = client_local_root();
+        std::fs::remove_file(root.path().join("local-data-policy.yaml"))
+            .expect("remove local data policy");
+
+        let failures =
+            validate_module_layout(root.path()).expect_err("local-data-policy.yaml is required");
+
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("local-data-policy.yaml")),
+            "unexpected failures: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn client_local_layout_rejects_postgres_engine_directories() {
+        let root = client_local_root();
+        touch_dir(root.path(), "migrations/postgres");
+
+        let failures =
+            validate_module_layout(root.path()).expect_err("postgres directories are forbidden");
+
+        assert!(
+            failures.contains(&"migrations/postgres must not exist".to_owned()),
+            "unexpected failures: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn authoritative_layout_requires_the_authoritative_only_paths() {
+        // Control for the role split: the section 5.1-only paths stay mandatory
+        // wherever section 5.1 applies, so the relaxation cannot silently drop
+        // them for authoritative roots.
+        let root = authoritative_root();
+        std::fs::remove_dir_all(root.path().join("ddl/generated")).expect("remove generated ddl");
+        std::fs::remove_dir_all(root.path().join("seeds/locales/ko-KR")).expect("remove locale");
+
+        let failures = validate_module_layout(root.path()).expect_err("section 5.1 paths required");
+
+        assert!(
+            failures.contains(&"ddl/generated must exist".to_owned()),
+            "unexpected failures: {failures:?}"
+        );
+        assert!(
+            failures.contains(&"seeds/locales/ko-KR must exist".to_owned()),
+            "unexpected failures: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn a_root_without_a_manifest_is_validated_as_authoritative() {
+        // The role comes from the manifest, so when it cannot be established the
+        // strictest layout applies rather than the most permissive one.
+        let root = client_local_root();
+        std::fs::remove_file(root.path().join("database.manifest.json")).expect("remove manifest");
+
+        let failures = validate_module_layout(root.path()).expect_err("the manifest is required");
+
+        assert!(
+            failures.contains(&"database.manifest.json must exist".to_owned()),
+            "unexpected failures: {failures:?}"
+        );
+        assert!(
+            failures.contains(&"seeds/seed.manifest.json must exist".to_owned()),
+            "unexpected failures: {failures:?}"
+        );
     }
 
     #[test]

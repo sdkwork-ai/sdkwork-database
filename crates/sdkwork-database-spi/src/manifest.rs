@@ -84,9 +84,25 @@ pub struct DatabaseManifestLifecycle {
 pub struct DatabaseManifestPaths {
     pub contract: String,
     pub migrations: String,
+    /// Seed tree root. The authoritative layouts declare it; the
+    /// client-local manifest profile in DATABASE_FRAMEWORK_SPEC.md
+    /// section 6.1 does not, so it falls back to the canonical directory
+    /// name rather than failing the whole manifest.
+    #[serde(default = "default_seeds_path")]
     pub seeds: String,
-    #[serde(rename = "driftPolicy")]
+    /// Drift policy file. Omitted by the client-local profile for the same
+    /// reason; the drift provider treats a missing file as the default
+    /// policy.
+    #[serde(rename = "driftPolicy", default = "default_drift_policy_path")]
     pub drift_policy: String,
+}
+
+fn default_seeds_path() -> String {
+    "seeds".to_string()
+}
+
+fn default_drift_policy_path() -> String {
+    "drift/policy.yaml".to_string()
 }
 
 fn default_seed_locale() -> String {
@@ -192,5 +208,49 @@ mod tests {
         let manifest: DatabaseManifest =
             serde_json::from_str(manifest_base_json()).expect("parse manifest");
         assert!(manifest.table_prefixes.is_empty());
+    }
+
+    #[test]
+    fn client_local_profile_parses_without_the_seed_and_drift_paths() {
+        // DATABASE_FRAMEWORK_SPEC.md section 6.1, client-local profile: its
+        // `paths` block declares only contract, migrations and
+        // localDataPolicy. Requiring `seeds` or `driftPolicy` rejects the
+        // spec's own normative example before any layout rule can run.
+        let json = r#"{
+            "schemaVersion": 2,
+            "kind": "sdkwork.database.module",
+            "databaseRole": "client-local",
+            "moduleId": "forum-desktop-local",
+            "serviceCode": "FORUM_DESKTOP_LOCAL",
+            "engines": ["sqlite"],
+            "defaultEngine": "sqlite",
+            "contractVersion": "1.0.0",
+            "paths": {
+                "contract": "contract/schema.yaml",
+                "migrations": "migrations",
+                "localDataPolicy": "local-data-policy.yaml"
+            }
+        }"#;
+
+        let manifest: DatabaseManifest = serde_json::from_str(json).expect("parse manifest");
+
+        assert_eq!(manifest.paths.migrations, "migrations");
+        assert_eq!(manifest.paths.seeds, "seeds");
+        assert_eq!(manifest.paths.drift_policy, "drift/policy.yaml");
+    }
+
+    #[test]
+    fn declared_seed_and_drift_paths_win_over_the_defaults() {
+        let json = manifest_base_json()
+            .replace("\"seeds\": \"seeds\"", "\"seeds\": \"data/seeds\"")
+            .replace(
+                "\"driftPolicy\": \"drift/policy.yaml\"",
+                "\"driftPolicy\": \"drift/custom.yaml\"",
+            );
+
+        let manifest: DatabaseManifest = serde_json::from_str(&json).expect("parse manifest");
+
+        assert_eq!(manifest.paths.seeds, "data/seeds");
+        assert_eq!(manifest.paths.drift_policy, "drift/custom.yaml");
     }
 }
