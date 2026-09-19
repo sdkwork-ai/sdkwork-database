@@ -414,10 +414,17 @@ fn normalized_database_authority(url: &str) -> String {
     let authority_without_credentials = authority
         .rsplit_once('@')
         .map_or(authority, |(_, host)| host);
-    format!(
-        "{scheme}{authority_without_credentials}{}",
-        &remainder[authority_end..]
-    )
+    // The registry authority is scheme + host + port + database name: that
+    // triple decides which `sdkwork_node_registry` table backs the leases.
+    // Query parameters are per-connection session options (search_path,
+    // statement timeout guards, ...) that module pools legitimately set
+    // differently while using the same registry table, so they must not enter
+    // the fingerprint.
+    let path = remainder[authority_end..]
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("");
+    format!("{scheme}{authority_without_credentials}{path}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1056,12 +1063,22 @@ mod tests {
     }
 
     #[test]
-    fn authority_fingerprint_normalization_ignores_database_credentials() {
+    fn authority_fingerprint_normalization_ignores_credentials_and_connection_options() {
+        // Module pools point at the same registry database with different
+        // per-connection session options (search_path, statement timeout
+        // guards, ...); only scheme, authority, and database name identify
+        // the registry.
         assert_eq!(
             normalized_database_authority(
                 "postgresql://alice:secret@db.internal:5432/app?options=search_path%3Dpublic"
             ),
-            "postgresql://db.internal:5432/app?options=search_path%3Dpublic"
+            "postgresql://db.internal:5432/app"
+        );
+        assert_eq!(
+            normalized_database_authority(
+                "postgres://sdkwork_ai_dev:sdkworkdev123@127.0.0.1:5432/sdkwork_ai_dev?sslmode=disable&options=-c%20statement_timeout%3D5000"
+            ),
+            "postgres://127.0.0.1:5432/sdkwork_ai_dev"
         );
         assert_eq!(
             normalized_database_authority("sqlite:///var/lib/sdkwork/router.sqlite"),
