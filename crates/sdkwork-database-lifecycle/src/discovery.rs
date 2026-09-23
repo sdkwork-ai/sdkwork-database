@@ -54,7 +54,9 @@ pub fn discover_database_modules(
 
     for app_root in app_roots {
         if !app_root_has_database_assets(app_root) {
-            report.skipped_without_database_assets.push(app_root.clone());
+            report
+                .skipped_without_database_assets
+                .push(app_root.clone());
             continue;
         }
 
@@ -67,17 +69,17 @@ pub fn discover_database_modules(
         modules.push(module);
     }
 
-    let builder = modules.into_iter().try_fold(
-        DatabaseModuleRegistry::builder(),
-        |builder, module| {
-            let module_id = module.manifest().module_id.clone();
-            builder.register(module).map_err(|error| {
-                LifecycleError::Migration(format!(
-                    "registering database module `{module_id}` failed: {error}"
-                ))
-            })
-        },
-    )?;
+    let builder =
+        modules
+            .into_iter()
+            .try_fold(DatabaseModuleRegistry::builder(), |builder, module| {
+                let module_id = module.manifest().module_id.clone();
+                builder.register(module).map_err(|error| {
+                    LifecycleError::Migration(format!(
+                        "registering database module `{module_id}` failed: {error}"
+                    ))
+                })
+            })?;
 
     Ok((builder.build(), report))
 }
@@ -123,8 +125,7 @@ mod tests {
 
     #[test]
     fn registers_modules_from_valid_app_roots() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../sdkwork-course");
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sdkwork-course");
         if !app_root_has_database_assets(&root) {
             // The sibling sdkwork-course checkout is not part of this
             // workspace's CI footprint; skip when absent.

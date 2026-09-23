@@ -473,12 +473,13 @@ async fn ensure_registry_table(pool: &DatabasePool) -> Result<(), NodeAllocatorE
             // server startup. Probe first and run DDL only when the registry
             // is genuinely missing (fresh environments, where the caller is
             // expected to hold migrator privileges).
-            let registry_exists: bool = sqlx::query_scalar(
-                "SELECT to_regclass('sdkwork_node_registry') IS NOT NULL",
-            )
-            .fetch_one(pg)
-            .await
-            .map_err(|e| NodeAllocatorError::Database(format!("probe registry table: {e}")))?;
+            let registry_exists: bool =
+                sqlx::query_scalar("SELECT to_regclass('sdkwork_node_registry') IS NOT NULL")
+                    .fetch_one(pg)
+                    .await
+                    .map_err(|e| {
+                        NodeAllocatorError::Database(format!("probe registry table: {e}"))
+                    })?;
             if !registry_exists {
                 sqlx::query(CREATE_POSTGRES_TABLE_SQL)
                     .execute(pg)
