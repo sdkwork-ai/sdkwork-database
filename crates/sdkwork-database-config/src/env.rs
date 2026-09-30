@@ -162,9 +162,12 @@ fn resolve_pool_settings() -> Result<(u32, u32, u64, u64, u64), ConfigError> {
         .flatten()
         .and_then(|profile| profile.max_connections)
         .and_then(|value| value.parse::<u32>().ok());
+    // The env-path fallback matches the serde default
+    // (`default_max_connections`, 16) so both configuration paths agree when
+    // neither a profile nor the environment names a size.
     let max_connections = get_env_as(
         "SDKWORK_DATABASE_MAX_CONNECTIONS",
-        profile_max_connections.unwrap_or(10_u32),
+        profile_max_connections.unwrap_or(16_u32),
     )?;
     let min_connections = get_env_as("SDKWORK_DATABASE_MIN_CONNECTIONS", 1_u32)?;
     if min_connections > max_connections {
