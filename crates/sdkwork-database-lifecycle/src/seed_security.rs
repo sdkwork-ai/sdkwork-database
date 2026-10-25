@@ -324,6 +324,10 @@ fn check_file_path(path: &Path, report: &mut SeedSecurityReport) {
 }
 
 /// Check for balanced statements (basic SQL validation).
+///
+/// Line comments (`-- …`) are skipped: a SQL engine ignores them entirely, so
+/// prose apostrophes (e.g. a song title `Don't` in a catalog comment) must not
+/// flip the string scanner and poison the paren balance of the whole file.
 fn check_statement_balance(content: &str, report: &mut SeedSecurityReport) {
     let mut paren_depth = 0i32;
     let mut in_string = false;
@@ -331,8 +335,18 @@ fn check_statement_balance(content: &str, report: &mut SeedSecurityReport) {
 
     for (line_num, line) in content.lines().enumerate() {
         let mut prev_char = ' ';
+        let mut in_line_comment = false;
+        let mut chars = line.chars().peekable();
 
-        for ch in line.chars() {
+        while let Some(ch) = chars.next() {
+            if !in_string && !in_line_comment && ch == '-' && chars.peek() == Some(&'-') {
+                in_line_comment = true;
+                continue;
+            }
+            if in_line_comment {
+                continue;
+            }
+
             // Handle string literals
             if (ch == '\'' || ch == '"') && prev_char != '\\' {
                 if !in_string {
@@ -438,6 +452,19 @@ INSERT INTO users (id, name) VALUES (1, 'Alice');
         let content = "INSERT INTO test (id VALUES (1);";
         let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
         assert!(!report.is_safe);
+    }
+
+    #[test]
+    fn test_line_comments_do_not_poison_the_balance_scan() {
+        // A prose apostrophe inside a line comment must not open a phantom
+        // string and desync the paren balance of the rest of the file.
+        let content = concat!(
+            "-- ── Course: 【We Don't Talk Anymore】 tutorial ──\n",
+            "-- note (half-width parens in prose are fine)\n",
+            "INSERT INTO test (id, name) VALUES (1, 'it''s fine');\n",
+        );
+        let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
+        assert!(report.is_safe, "errors: {:?}", report.errors);
     }
 
     #[test]
