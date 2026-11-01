@@ -6,8 +6,9 @@
 //! `/Library/Application Support/sdkwork/database`, Windows
 //! `%ProgramData%\sdkwork\database`. `SDKWORK_DATABASE_CONFIG_DIR` is the
 //! explicit operator override. Development and test environments never use
-//! the canonical system directory: development resolves `.env.postgres` at
-//! the application root and test runners use ephemeral isolated state.
+//! the canonical system directory: development resolves
+//! `config/host/postgres.env` at the application root and test runners use
+//! ephemeral isolated state.
 //!
 //! File shapes in the selected directory:
 //!
@@ -91,7 +92,7 @@ fn canonical_application_config_root() -> Option<PathBuf> {
 ///
 /// Checks any `SDKWORK*_ENVIRONMENT` variable (`SDKWORK_ENVIRONMENT`,
 /// `SDKWORK_<APPLICATION_CODE>_ENVIRONMENT`). Development and test resolve
-/// `.env.postgres`/ephemeral state and must not read the canonical system
+/// `config/host/postgres.env`/ephemeral state and must not read the canonical system
 /// directory.
 pub fn runtime_environment_is_development_or_test() -> bool {
     std::env::vars()
