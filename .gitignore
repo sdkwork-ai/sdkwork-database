@@ -47,6 +47,8 @@ Thumbs.db
 # Common runtime/build artifacts (auto-aligned)
 *.sqlite-shm
 *.sqlite-wal
+*.sqlite
+*.db
 **/test-results/
 .turbo/
 **/.turbo/
