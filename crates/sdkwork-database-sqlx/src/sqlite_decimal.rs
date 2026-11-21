@@ -63,7 +63,7 @@ fn register_result(code: c_int, function_name: &str) -> Result<(), sqlx::Error> 
     ))))
 }
 
-unsafe fn register_decimal_sum(sqlite: *mut ffi::sqlite3) -> c_int {
+unsafe fn register_decimal_sum(sqlite: *mut ffi::sqlite3) -> c_int { unsafe {
     ffi::sqlite3_create_function_v2(
         sqlite,
         DECIMAL_SUM_NAME.as_ptr().cast(),
@@ -75,9 +75,9 @@ unsafe fn register_decimal_sum(sqlite: *mut ffi::sqlite3) -> c_int {
         Some(decimal_sum_final),
         None,
     )
-}
+}}
 
-unsafe fn register_decimal_order_key(sqlite: *mut ffi::sqlite3) -> c_int {
+unsafe fn register_decimal_order_key(sqlite: *mut ffi::sqlite3) -> c_int { unsafe {
     ffi::sqlite3_create_function_v2(
         sqlite,
         DECIMAL_ORDER_KEY_NAME.as_ptr().cast(),
@@ -89,13 +89,13 @@ unsafe fn register_decimal_order_key(sqlite: *mut ffi::sqlite3) -> c_int {
         None,
         None,
     )
-}
+}}
 
 unsafe extern "C" fn decimal_sum_step(
     context: *mut ffi::sqlite3_context,
     argument_count: c_int,
     arguments: *mut *mut ffi::sqlite3_value,
-) {
+) { unsafe {
     if argument_count != 1 || arguments.is_null() {
         result_error(context, INVALID_ARGUMENT_MESSAGE);
         return;
@@ -132,9 +132,9 @@ unsafe extern "C" fn decimal_sum_step(
         return;
     };
     (*state).scaled = total;
-}
+}}
 
-unsafe extern "C" fn decimal_sum_final(context: *mut ffi::sqlite3_context) {
+unsafe extern "C" fn decimal_sum_final(context: *mut ffi::sqlite3_context) { unsafe {
     let state = ffi::sqlite3_aggregate_context(context, 0).cast::<DecimalSumState>();
     if state.is_null() {
         result_text(context, &format_scaled_decimal(0));
@@ -145,13 +145,13 @@ unsafe extern "C" fn decimal_sum_final(context: *mut ffi::sqlite3_context) {
         return;
     }
     result_text(context, &format_scaled_decimal((*state).scaled));
-}
+}}
 
 unsafe extern "C" fn decimal_order_key(
     context: *mut ffi::sqlite3_context,
     argument_count: c_int,
     arguments: *mut *mut ffi::sqlite3_value,
-) {
+) { unsafe {
     if argument_count != 1 || arguments.is_null() {
         result_error(context, INVALID_ARGUMENT_MESSAGE);
         return;
@@ -175,9 +175,9 @@ unsafe extern "C" fn decimal_order_key(
     // collation without any floating-point conversion.
     let ordered = (scaled as u128) ^ (1_u128 << 127);
     result_text(context, &format!("{ordered:039}"));
-}
+}}
 
-unsafe fn decimal_argument<'a>(argument: *mut ffi::sqlite3_value) -> Option<&'a str> {
+unsafe fn decimal_argument<'a>(argument: *mut ffi::sqlite3_value) -> Option<&'a str> { unsafe {
     let value_type = ffi::sqlite3_value_type(argument);
     if value_type != ffi::SQLITE_TEXT && value_type != ffi::SQLITE_INTEGER {
         return None;
@@ -192,7 +192,7 @@ unsafe fn decimal_argument<'a>(argument: *mut ffi::sqlite3_value) -> Option<&'a 
     }
     let bytes = std::slice::from_raw_parts(pointer.cast::<u8>(), length as usize);
     std::str::from_utf8(bytes).ok()
-}
+}}
 
 fn parse_scaled_decimal(value: &str) -> Result<i128, ()> {
     if value.is_empty() || value.trim() != value || value.starts_with('+') {
@@ -258,18 +258,18 @@ fn format_scaled_decimal(scaled: i128) -> String {
     format!("{sign}{whole}.{fraction:012}")
 }
 
-unsafe fn result_text(context: *mut ffi::sqlite3_context, value: &str) {
+unsafe fn result_text(context: *mut ffi::sqlite3_context, value: &str) { unsafe {
     ffi::sqlite3_result_text(
         context,
         value.as_ptr().cast(),
         value.len() as c_int,
         ffi::SQLITE_TRANSIENT(),
     );
-}
+}}
 
-unsafe fn result_error(context: *mut ffi::sqlite3_context, message: &[u8]) {
+unsafe fn result_error(context: *mut ffi::sqlite3_context, message: &[u8]) { unsafe {
     ffi::sqlite3_result_error(context, message.as_ptr().cast(), message.len() as c_int);
-}
+}}
 
 #[cfg(test)]
 mod tests {
