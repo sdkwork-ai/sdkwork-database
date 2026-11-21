@@ -142,8 +142,42 @@ impl LifecycleOrchestrator {
             execute_sql_script_atomically(&self.pool, &sql).await?;
             applied_count += 1;
         }
+        self.record_baseline_migration_coverage().await?;
 
         Ok(applied_count)
+    }
+
+    /// Record the module's migration history on a freshly baselined database.
+    ///
+    /// A consolidated baseline is the fresh-install bootstrap: its DDL already
+    /// expresses the end state of the migration chain it was consolidated from,
+    /// and the migration files stay checksum-immutable lifecycle history
+    /// (`DATABASE_FRAMEWORK_SPEC.md` §7.5). Recording every migration version
+    /// with its current checksum here is what makes the two representations
+    /// converge: `migrate` plans only migrations born after the consolidation,
+    /// and the readiness drift gate stops reporting the consolidated history as
+    /// pending on a fresh install. Databases provisioned before the baseline
+    /// never enter this path — the anchor-table and installation-state guards
+    /// above skip the baseline, and their real migration history keeps driving
+    /// upgrades.
+    async fn record_baseline_migration_coverage(&self) -> Result<(), LifecycleError> {
+        let descriptor = self.module.descriptor();
+        let engine = self.pool.engine();
+        for migration in self.module.list_migrations(engine).await? {
+            let checksum = file_checksum(&migration.up_path)?;
+            record_migration(
+                &self.pool,
+                &descriptor.module_id,
+                &migration.version,
+                &migration.name,
+                engine,
+                &checksum,
+                0,
+                "baseline",
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     pub async fn plan_migrations(
