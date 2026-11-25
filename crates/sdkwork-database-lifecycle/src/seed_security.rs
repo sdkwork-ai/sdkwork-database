@@ -328,13 +328,18 @@ fn check_file_path(path: &Path, report: &mut SeedSecurityReport) {
 /// Line comments (`-- …`) are skipped: a SQL engine ignores them entirely, so
 /// prose apostrophes (e.g. a song title `Don't` in a catalog comment) must not
 /// flip the string scanner and poison the paren balance of the whole file.
+///
+/// String scanning follows PostgreSQL with `standard_conforming_strings = on`
+/// (the seed execution default): a backslash is an ordinary character inside a
+/// literal, and only a doubled quote (`''` / `""`) escapes the delimiter. A
+/// JSON payload that carries Windows paths (`''\\\\''` in the SQL literal) must
+/// therefore stay inside the string instead of desyncing the paren balance.
 fn check_statement_balance(content: &str, report: &mut SeedSecurityReport) {
     let mut paren_depth = 0i32;
     let mut in_string = false;
     let mut string_char = ' ';
 
     for (line_num, line) in content.lines().enumerate() {
-        let mut prev_char = ' ';
         let mut in_line_comment = false;
         let mut chars = line.chars().peekable();
 
@@ -347,33 +352,37 @@ fn check_statement_balance(content: &str, report: &mut SeedSecurityReport) {
                 continue;
             }
 
-            // Handle string literals
-            if (ch == '\'' || ch == '"') && prev_char != '\\' {
-                if !in_string {
-                    in_string = true;
-                    string_char = ch;
-                } else if ch == string_char {
-                    in_string = false;
+            if in_string {
+                if ch == string_char {
+                    if chars.peek() == Some(&string_char) {
+                        // A doubled delimiter is one literal quote; stay in the string.
+                        chars.next();
+                    } else {
+                        in_string = false;
+                    }
                 }
+                continue;
+            }
+
+            if ch == '\'' || ch == '"' {
+                in_string = true;
+                string_char = ch;
+                continue;
             }
 
             // Track parentheses outside strings
-            if !in_string {
-                if ch == '(' {
-                    paren_depth += 1;
-                } else if ch == ')' {
-                    paren_depth -= 1;
-                    if paren_depth < 0 {
-                        report.add_error(
-                            line_num + 1,
-                            "Unbalanced parentheses: closing ')' without matching '('.".to_string(),
-                        );
-                        paren_depth = 0;
-                    }
+            if ch == '(' {
+                paren_depth += 1;
+            } else if ch == ')' {
+                paren_depth -= 1;
+                if paren_depth < 0 {
+                    report.add_error(
+                        line_num + 1,
+                        "Unbalanced parentheses: closing ')' without matching '('.".to_string(),
+                    );
+                    paren_depth = 0;
                 }
             }
-
-            prev_char = ch;
         }
     }
 
@@ -462,6 +471,19 @@ INSERT INTO users (id, name) VALUES (1, 'Alice');
             "-- ── Course: 【We Don't Talk Anymore】 tutorial ──\n",
             "-- note (half-width parens in prose are fine)\n",
             "INSERT INTO test (id, name) VALUES (1, 'it''s fine');\n",
+        );
+        let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
+        assert!(report.is_safe, "errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn test_doubled_quotes_with_backslashes_stay_inside_the_string() {
+        // A JSON payload carrying Windows paths produces literal text such as
+        // ''\\\\'' inside the SQL string. With standard_conforming_strings the
+        // backslashes are data, so the doubled quotes must not close the string
+        // and expose the prose parens that follow.
+        let content = concat!(
+            "INSERT INTO test (payload) VALUES ('[{\"body\":\"b + ''\\\\\\\\'' (path)\"}]'::jsonb);\n",
         );
         let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
         assert!(report.is_safe, "errors: {:?}", report.errors);
