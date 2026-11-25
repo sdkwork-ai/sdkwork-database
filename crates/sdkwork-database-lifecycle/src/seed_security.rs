@@ -334,67 +334,124 @@ fn check_file_path(path: &Path, report: &mut SeedSecurityReport) {
 /// literal, and only a doubled quote (`''` / `""`) escapes the delimiter. A
 /// JSON payload that carries Windows paths (`''\\\\''` in the SQL literal) must
 /// therefore stay inside the string instead of desyncing the paren balance.
+///
+/// Dollar-quoted bodies (`$tag$…$tag$`, including `$$…$$`) are skipped the same
+/// way: the seed catalogs embed regex and JSON text whose parentheses are data.
 fn check_statement_balance(content: &str, report: &mut SeedSecurityReport) {
+    let chars: Vec<char> = content.chars().collect();
     let mut paren_depth = 0i32;
+    let mut line_num = 1usize;
     let mut in_string = false;
-    let mut string_char = ' ';
+    let mut string_char = '\'';
+    let mut in_line_comment = false;
+    let mut dollar_tag: Option<String> = None;
+    let mut index = 0usize;
 
-    for (line_num, line) in content.lines().enumerate() {
-        let mut in_line_comment = false;
-        let mut chars = line.chars().peekable();
+    while index < chars.len() {
+        let ch = chars[index];
 
-        while let Some(ch) = chars.next() {
-            if !in_string && !in_line_comment && ch == '-' && chars.peek() == Some(&'-') {
-                in_line_comment = true;
+        if ch == '\n' {
+            line_num += 1;
+            in_line_comment = false;
+            index += 1;
+            continue;
+        }
+
+        if in_line_comment {
+            index += 1;
+            continue;
+        }
+
+        if let Some(tag) = dollar_tag.as_deref() {
+            let tag_width = tag.chars().count();
+            if ch == '$' && chars[index..].iter().take(tag_width).copied().eq(tag.chars()) {
+                dollar_tag = None;
+                index += tag_width;
                 continue;
             }
-            if in_line_comment {
-                continue;
-            }
+            index += 1;
+            continue;
+        }
 
-            if in_string {
-                if ch == string_char {
-                    if chars.peek() == Some(&string_char) {
-                        // A doubled delimiter is one literal quote; stay in the string.
-                        chars.next();
-                    } else {
-                        in_string = false;
-                    }
+        if in_string {
+            if ch == string_char {
+                if chars.get(index + 1) == Some(&string_char) {
+                    // A doubled delimiter is one literal quote; stay in the string.
+                    index += 2;
+                    continue;
                 }
-                continue;
+                in_string = false;
             }
+            index += 1;
+            continue;
+        }
 
-            if ch == '\'' || ch == '"' {
-                in_string = true;
-                string_char = ch;
+        if ch == '-' && chars.get(index + 1) == Some(&'-') {
+            in_line_comment = true;
+            index += 2;
+            continue;
+        }
+
+        if ch == '$' {
+            if let Some(tag) = scan_dollar_tag(&chars, index) {
+                index += tag.chars().count();
+                dollar_tag = Some(tag);
                 continue;
-            }
-
-            // Track parentheses outside strings
-            if ch == '(' {
-                paren_depth += 1;
-            } else if ch == ')' {
-                paren_depth -= 1;
-                if paren_depth < 0 {
-                    report.add_error(
-                        line_num + 1,
-                        "Unbalanced parentheses: closing ')' without matching '('.".to_string(),
-                    );
-                    paren_depth = 0;
-                }
             }
         }
+
+        if ch == '\'' || ch == '"' {
+            in_string = true;
+            string_char = ch;
+            index += 1;
+            continue;
+        }
+
+        // Track parentheses outside strings
+        if ch == '(' {
+            paren_depth += 1;
+        } else if ch == ')' {
+            paren_depth -= 1;
+            if paren_depth < 0 {
+                report.add_error(
+                    line_num,
+                    "Unbalanced parentheses: closing ')' without matching '('.".to_string(),
+                );
+                paren_depth = 0;
+            }
+        }
+        index += 1;
     }
 
     if paren_depth > 0 {
         report.add_error(
-            content.lines().count(),
+            line_num,
             format!(
                 "Unbalanced parentheses: {} unclosed '(' in seed script.",
                 paren_depth
             ),
         );
     }
+}
+
+/// Read a PostgreSQL dollar-quote opener (`$$` or `$tag$`) starting at `start`.
+fn scan_dollar_tag(chars: &[char], start: usize) -> Option<String> {
+    if chars.get(start) != Some(&'$') {
+        return None;
+    }
+    let mut end = start + 1;
+    while end < chars.len() {
+        let ch = chars[end];
+        if ch == '$' {
+            return Some(chars[start..=end].iter().collect());
+        }
+        if ch.is_alphanumeric() || ch == '_' {
+            end += 1;
+            continue;
+        }
+        return None;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -484,6 +541,15 @@ INSERT INTO users (id, name) VALUES (1, 'Alice');
         // and expose the prose parens that follow.
         let content = concat!(
             "INSERT INTO test (payload) VALUES ('[{\"body\":\"b + ''\\\\\\\\'' (path)\"}]'::jsonb);\n",
+        );
+        let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
+        assert!(report.is_safe, "errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn test_dollar_quoted_payload_keeps_parens_inert() {
+        let content = concat!(
+            "INSERT INTO test (payload) VALUES (1, $sdkwork_catalog${\"pattern\":\"^[a-z]([a-z])?$\"}$sdkwork_catalog$::jsonb);\n",
         );
         let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
         assert!(report.is_safe, "errors: {:?}", report.errors);
