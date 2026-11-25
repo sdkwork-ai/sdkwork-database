@@ -200,6 +200,10 @@ fn check_injection_patterns(content: &str, report: &mut SeedSecurityReport) {
                 "--" | ";--" => contains_line_comment(&upper_line),
                 "/*" | "*/" => upper_line.contains(pattern),
                 "UNION SELECT" | "UNION ALL SELECT" => contains_keyword_phrase(&tokens, pattern),
+                // Extended procedures are whole identifiers (`XP_CMDSHELL`). A plain
+                // substring test flags ordinary PostgreSQL functions whose name ends
+                // in `xp_`, such as `regexp_replace`.
+                "XP_" => tokens.iter().any(|token| token.starts_with(pattern)),
                 _ => upper_line.contains(pattern),
             };
             if matched {
@@ -553,6 +557,22 @@ INSERT INTO users (id, name) VALUES (1, 'Alice');
         );
         let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
         assert!(report.is_safe, "errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn test_regexp_replace_is_not_an_extended_procedure() {
+        // `regexp_replace` ends in `xp_`; only a whole `XP_*` identifier is a
+        // SQL Server extended procedure call.
+        let content = "UPDATE company SET name_normalized = lower(regexp_replace(btrim(name), '[[:space:][:punct:]]', '', 'g'));";
+        let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
+        assert!(report.is_safe, "errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn test_extended_procedure_still_detected() {
+        let content = "EXEC XP_CMDSHELL 'dir';";
+        let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
+        assert!(!report.is_safe);
     }
 
     #[test]
