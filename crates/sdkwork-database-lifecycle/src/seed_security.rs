@@ -368,7 +368,13 @@ fn check_statement_balance(content: &str, report: &mut SeedSecurityReport) {
 
         if let Some(tag) = dollar_tag.as_deref() {
             let tag_width = tag.chars().count();
-            if ch == '$' && chars[index..].iter().take(tag_width).copied().eq(tag.chars()) {
+            if ch == '$'
+                && chars[index..]
+                    .iter()
+                    .take(tag_width)
+                    .copied()
+                    .eq(tag.chars())
+            {
                 dollar_tag = None;
                 index += tag_width;
                 continue;
