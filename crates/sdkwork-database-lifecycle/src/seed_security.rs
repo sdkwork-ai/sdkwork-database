@@ -133,11 +133,18 @@ pub fn validate_seed_content(
 ) -> Result<SeedSecurityReport, LifecycleError> {
     let mut report = SeedSecurityReport::new();
 
+    // The keyword and injection scans read SQL, so they run over the text
+    // PostgreSQL would actually execute: literal bodies (which routinely span
+    // lines in a seed that embeds prose, personas or JSON) become blanks. The
+    // statement-balance check keeps the raw content because it tracks its own
+    // literal state.
+    let executable = mask_literal_bodies(content);
+
     // Check 1: Dangerous keywords
-    check_dangerous_keywords(content, &mut report);
+    check_dangerous_keywords(&executable, &mut report);
 
     // Check 2: Injection patterns
-    check_injection_patterns(content, &mut report);
+    check_injection_patterns(&executable, &mut report);
 
     // Check 3: File path validation
     check_file_path(seed_path, &mut report);
@@ -146,6 +153,97 @@ pub fn validate_seed_content(
     check_statement_balance(content, &mut report);
 
     Ok(report)
+}
+
+/// Blank every character inside a string literal, keeping newlines so a
+/// reported line number still matches the file.
+///
+/// A seed file embeds prose in multi-line literals — persona bodies, prompts,
+/// JSON payloads — and that prose is data, not SQL. Scanning it as SQL reports
+/// the words it happens to contain (`GRANT`, `EXECUTE(`, `--`) as dangerous
+/// statements. This mask handles single and double quotes with doubled-quote
+/// escapes, and PostgreSQL dollar-quoted strings (`$tag$ … $tag$`), which the
+/// generated seeds use for JSON payloads.
+fn mask_literal_bodies(content: &str) -> String {
+    let chars: Vec<char> = content.chars().collect();
+    let mut output = String::with_capacity(content.len());
+    let mut index = 0;
+    let mut quote: Option<char> = None;
+    let mut dollar_tag: Option<String> = None;
+
+    while index < chars.len() {
+        let ch = chars[index];
+
+        if let Some(tag) = dollar_tag.clone() {
+            if ch == '$' && starts_with_chars(&chars, index, &tag) {
+                for _ in 0..tag.chars().count() {
+                    output.push(' ');
+                }
+                index += tag.chars().count();
+                dollar_tag = None;
+                continue;
+            }
+            output.push(if ch == '\n' { '\n' } else { ' ' });
+            index += 1;
+            continue;
+        }
+
+        if let Some(delimiter) = quote {
+            output.push(if ch == '\n' { '\n' } else { ' ' });
+            if ch == delimiter {
+                if matches!(chars.get(index + 1), Some(next) if *next == delimiter) {
+                    output.push(' ');
+                    index += 2;
+                    continue;
+                }
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+
+        if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+            output.push(' ');
+            index += 1;
+            continue;
+        }
+
+        if ch == '$' {
+            if let Some(tag) = dollar_tag_at(&chars, index) {
+                for _ in 0..tag.chars().count() {
+                    output.push(' ');
+                }
+                index += tag.chars().count();
+                dollar_tag = Some(tag);
+                continue;
+            }
+        }
+
+        output.push(ch);
+        index += 1;
+    }
+
+    output
+}
+
+/// Whether `needle` appears at `start` in `chars`.
+fn starts_with_chars(chars: &[char], start: usize, needle: &str) -> bool {
+    let needle: Vec<char> = needle.chars().collect();
+    start + needle.len() <= chars.len() && chars[start..start + needle.len()] == needle[..]
+}
+
+/// The `$tag$` delimiter that opens at `start`, or `None` when this `$` is not a
+/// dollar-quote opener.
+fn dollar_tag_at(chars: &[char], start: usize) -> Option<String> {
+    let mut end = start + 1;
+    while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
+        end += 1;
+    }
+    if end < chars.len() && chars[end] == '$' {
+        return Some(chars[start..=end].iter().collect());
+    }
+    None
 }
 
 /// Check for dangerous SQL keywords.
@@ -587,5 +685,51 @@ INSERT INTO users (id, name) VALUES (1, 'Alice');
         let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
         assert!(report.is_safe); // Warning, not error
         assert!(!report.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_multiline_persona_prose_is_not_scanned_as_sql() {
+        // A seed that embeds a persona body in one literal: the prose spans
+        // lines and happens to contain the words the scanner treats as
+        // dangerous. None of it is SQL.
+        let content = concat!(
+            "UPDATE ai_expert_persona SET persona_text = '# 专家\\n",
+            "## 边界与合规\\n",
+            "GRANT 是对授予动作的描述，不影响数据库权限。\\n",
+            "EXECUTE( 只是文档里的示例写法。\\n",
+            "-- 这一行在人格正文里，不是 SQL 注释。\\n",
+            "/* 这里的块注释文字也属于正文。 */\\n",
+            "' WHERE locale = 'zh-CN';\n",
+            "INSERT INTO test (id) VALUES (1);\n",
+        );
+        let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
+        assert!(report.is_safe, "errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn test_multiline_dollar_quoted_payload_is_not_scanned_as_sql() {
+        let content = concat!(
+            "INSERT INTO test (payload) VALUES ($sdkwork_catalog$\n",
+            "GRANT notes\n",
+            "-- not a comment\n",
+            "$sdkwork_catalog$::jsonb);\n",
+        );
+        let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
+        assert!(report.is_safe, "errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn test_real_grant_statement_is_still_rejected() {
+        let content = "GRANT SELECT ON ai_agent TO sdkwork_ai_dev;";
+        let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
+        assert!(!report.is_safe);
+    }
+
+    #[test]
+    fn test_trailing_comment_after_sql_is_still_rejected() {
+        // The literal mask must not turn a real trailing comment into a pass.
+        let content = "INSERT INTO test (id) VALUES (1); -- note\n";
+        let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
+        assert!(!report.is_safe);
     }
 }
